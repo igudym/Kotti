@@ -14,25 +14,25 @@ from deform.widget import SequenceWidget
 from pyramid.exceptions import Forbidden
 from pyramid.httpexceptions import HTTPFound
 from pyramid.view import view_config
+from pyramid.security import ALL_PERMISSIONS
+from kotti import DBSession
 
 from kotti.events import UserDeleted
 from kotti.events import notify
 from kotti.message import email_set_password
 from kotti.resources import get_root
-from kotti.security import ROLES
-from kotti.security import SHARING_ROLES
+from kotti.security import ROLES, PERMISSIONS
 from kotti.security import USER_MANAGEMENT_ROLES
-from kotti.security import get_principals
+from kotti.security import get_principals, Principal
 from kotti.security import list_groups_ext
-from kotti.security import list_groups_raw
-from kotti.security import map_principals_with_local_roles
-from kotti.security import set_groups
+from kotti.security import acl_search
 from kotti.util import _
 from kotti.views.form import AddFormView
 from kotti.views.form import EditFormView
 from kotti.views.site_setup import CONTROL_PANEL_LINKS
 from kotti.views.util import is_root
 from kotti.views.util import template_api
+from sqlalchemy.sql import not_, or_
 
 
 def roles_form_handler(context, request, available_role_names, groups_lister):
@@ -101,33 +101,82 @@ def search_principals(request, context=None, ignore=None, extra=()):
     return entries
 
 
+def acl_form_handler(context, request):
+    changed = False
+    new = []
+    perms = []
+    for key, value in request.POST.items():
+        if key in ('query', 'apply'):
+            continue
+        words = key.split('::')
+        principal, term = words[0], words[1]
+        if term == 'action':
+            if len(perms) > 0:
+                all = perms[0] == 'ALL_PERMISSIONS'
+                perms = [ALL_PERMISSIONS] if perms == ['ALL_PERMISSIONS'] else perms
+                found, ace = acl_search(context._acl, principal, all)
+                if found > 0:
+                    if not all:
+                        form_perm = perms[:]
+                        acl_perm = [ace[2]] if isinstance(ace[2],
+                                                basestring) else ace[2][:]
+                        acl_perm.sort()
+                        form_perm.sort()
+                        store = acl_perm != form_perm
+                    else:
+                        store = ace[0] != value
+                    if store:
+                        context._acl[found] = (value, principal, perms)
+                        changed = True
+                else:
+                    new.append((value, principal, perms if len(perms)>1
+                                                        else perms[0]))
+                    changed = True
+                perms = []
+            else:
+                found, ace = acl_search(context._acl, principal)
+                if found >= 0:
+                    del context._acl[found]
+                    changed = True
+        else:
+            perms.append(term)
+    if len(new) > 0:
+        context._acl = new + context._acl
+
+    return changed
+
+
 @view_config(name='share', permission='manage',
              renderer='kotti:templates/edit/share.pt')
 def share_node(context, request):
-    # Allow roles_form_handler to do processing on 'apply':
-    changed = roles_form_handler(
-        context, request, SHARING_ROLES, list_groups_raw)
-    if changed:
-        for (principal_name, context, groups) in changed:
-            set_groups(principal_name, context, groups)
+    # Process form
+    if 'apply' in request.POST:
+        changed = acl_form_handler(context, request)
+        if changed:
+            request.session.flash(
+                _(u'Your changes have been saved.'), 'success')
+        else:
+            request.session.flash(_(u'No changes made.'), 'info')
         return HTTPFound(location=request.url)
 
-    existing = map_principals_with_local_roles(context)
-
-    def with_roles(entry):
-        all_groups = entry[1][0]
-        return [g for g in all_groups if g.startswith('role:')]
-
-    existing = filter(with_roles, existing)
-    seen = set([entry[0].name for entry in existing])
-
-    # Allow search to take place and add some entries:
-    entries = existing + search_principals(request, context, ignore=seen)
-    available_roles = [ROLES[role_name] for role_name in SHARING_ROLES]
+    if 'search' in request.POST:
+        listed = [ace[1] for ace in context._acl]
+        query = '%' + request.params['query'] + '%'
+        entries = DBSession.query(Principal).filter(or_(
+                Principal.name.like(query),
+                Principal.title.like(query),
+                Principal.email.like(query))).filter(
+                not_(Principal.name.in_(listed))).all()
+        if not entries:
+            request.session.flash(_(u'No users or groups found.'), 'info')
+    else:
+        entries = []
 
     return {
         'entries': entries,
-        'available_roles': available_roles,
+        'acl': context._acl[1:],
+        'permissions': PERMISSIONS,
+        'all': ALL_PERMISSIONS,
         }
 
 

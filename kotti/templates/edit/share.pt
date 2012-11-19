@@ -9,7 +9,7 @@
 
     <form action="${request.url}" method="post">
       <fieldset>
-        <legend i18n:translate="">Assign local roles</legend>
+        <legend i18n:translate="">Manage access rights</legend>
 
         <div class="control-group">
           <div class="controls">
@@ -26,35 +26,65 @@
           </button>
         </div>
 
-        <table tal:condition="entries" class="table table-bordered">
+        <table tal:condition="entries or acl" class="table table-bordered">
           <tr>
             <th i18n:translate="">Name</th>
-            <th tal:repeat="role available_roles">
-              ${role.title}
+            <th tal:repeat="permission permissions">
+              ${permission}
             </th>
+            <th>ALL_PERMISSIONS</th>
+            <th>Action</th>
           </tr>
           <tr tal:repeat="entry entries"
               class="entry ${repeat.entry.even and 'even' or 'odd'}">
             <td>
-              <img src="${api.avatar_url(entry[0])}" alt="Gravatar"
+              <img src="${api.avatar_url(entry)}" alt="Gravatar"
                    i18n:attributes="alt"/>
-              ${entry[0].title}
+              ${entry.title}
             </td>
-            <td tal:repeat="role available_roles">
-              <input type="checkbox"
-                     name="role::${entry[0].name}::${role.name}"
-                     checked="${role.name in entry[1][0] and 'checked' or None}"
-                     disabled="${role.name in entry[1][1] and 'disabled' or None}"
-                     />
-              <input type="hidden"
-                     name="orig-role::${entry[0].name}::${role.name}"
-                     value="${role.name in entry[1][0] and '1' or None}"
-                     />
+            <td tal:repeat="perm permissions">
+                  <input type="checkbox"
+                         name="${entry.name}::${perm}"
+                         />
+            </td>
+            <td>
+                  <input type="checkbox"
+                         name="${entry.name}::ALL_PERMISSIONS"
+                         />
+            </td>
+            <td>
+                <select name="${entry.name}::action">
+                  <option>Allow</option>
+                  <option>Deny</option>
+                </select>
+            </td>
+          </tr>
+          <tr tal:repeat="ace acl">
+            <td>${ace[1]}</td>
+            <td tal:repeat="perm permissions">
+                  <input type="checkbox"
+                         name="${ace[1]}::${perm}"
+                         checked="${ace[2] != all and perm in ace[2] and 'checked' or None}"
+                         />
+            </td>
+            <td>
+                  <input type="checkbox"
+                         name="${ace[1]}::ALL_PERMISSIONS"
+                         checked="${ace[2] == all and 'checked' or None}"
+                         />
+            </td>
+            <td>
+                <select name="${ace[1]}::action">
+                  <option selected="${'Allow' == ace[0] and 'selected' or None}">
+                    Allow</option>
+                  <option selected="${'Deny' == ace[0] and 'selected' or None}">
+                    Deny</option>
+                </select>
             </td>
           </tr>
         </table>
 
-        <div class="form-actions" tal:condition="entries">
+        <div class="form-actions" tal:condition="entries or acl">
           <button type="submit" name="apply" class="btn btn-primary"
                   i18n:translate="">
             Apply changes
