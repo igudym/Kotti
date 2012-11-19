@@ -19,8 +19,8 @@ argparse==1.2.1
 colander==0.9.8
 cov-core==1.7
 coverage==3.5.1
-deform==0.9.5
-deform-bootstrap==0.2.2
+deform>=0.9.5
+deform-bootstrap>=0.2.2
 docopt==0.5.0
 docutils==0.8.1
 execnet==1.1

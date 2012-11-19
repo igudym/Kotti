@@ -1,20 +1,24 @@
 """User management screens
 """
+import deform
 
 import re
 from urllib import urlencode
 
 import colander
+from colander import MappingSchema, SchemaNode, String, SequenceSchema
 from deform import Button
 from deform import Set
+from deform import ValidationFailure
 from deform.widget import AutocompleteInputWidget
-from deform.widget import CheckboxChoiceWidget
+from deform_bootstrap.widget import TypeaheadInputWidget
+from deform.widget import CheckboxChoiceWidget, SelectWidget
 from deform.widget import CheckedPasswordWidget
 from deform.widget import SequenceWidget
 from pyramid.exceptions import Forbidden
 from pyramid.httpexceptions import HTTPFound
 from pyramid.view import view_config
-from pyramid.security import ALL_PERMISSIONS
+from pyramid.security import ALL_PERMISSIONS, Allow, Deny
 from kotti import DBSession
 
 from kotti.events import UserDeleted
@@ -101,82 +105,86 @@ def search_principals(request, context=None, ignore=None, extra=()):
     return entries
 
 
-def acl_form_handler(context, request):
-    changed = False
-    new = []
-    perms = []
-    for key, value in request.POST.items():
-        if key in ('query', 'apply'):
-            continue
-        words = key.split('::')
-        principal, term = words[0], words[1]
-        if term == 'action':
-            if len(perms) > 0:
-                all = perms[0] == 'ALL_PERMISSIONS'
-                perms = [ALL_PERMISSIONS] if perms == ['ALL_PERMISSIONS'] else perms
-                found, ace = acl_search(context._acl, principal, all)
-                if found > 0:
-                    if not all:
-                        form_perm = perms[:]
-                        acl_perm = [ace[2]] if isinstance(ace[2],
-                                                basestring) else ace[2][:]
-                        acl_perm.sort()
-                        form_perm.sort()
-                        store = acl_perm != form_perm
-                    else:
-                        store = ace[0] != value
-                    if store:
-                        context._acl[found] = (value, principal, perms)
-                        changed = True
-                else:
-                    new.append((value, principal, perms if len(perms)>1
-                                                        else perms[0]))
-                    changed = True
-                perms = []
-            else:
-                found, ace = acl_search(context._acl, principal)
-                if found >= 0:
-                    del context._acl[found]
-                    changed = True
-        else:
-            perms.append(term)
-    if len(new) > 0:
-        context._acl = new + context._acl
+def permissions_validator(node, value):
+    if 'ALL_PERMISSIONS' in value and len(value) > 21:
+        raise colander.Invalid(node,
+            'Check "ALL" permission or some of others - not both')
 
-    return changed
+
+class AceSchema(MappingSchema):
+    principal = SchemaNode(String(),
+        widget = TypeaheadInputWidget(items=15, values = '/search_principals'),
+    )
+    _perms = [(perm, perm) for perm in PERMISSIONS]
+    _perms.append(('ALL_PERMISSIONS', 'ALL'))
+    permissions = colander.SchemaNode(colander.String(),
+            widget=deform.widget.CheckboxChoiceWidget(values=_perms, inline=True),
+            validator=permissions_validator)
+    action = SchemaNode(String(), widget=SelectWidget(
+                        values=(('allow', 'Allow'), ('deny', 'Deny'))))
+
+
+@view_config(renderer='json', name='search_principals', permission='edit')
+def lookup_principals(context, request):
+    text = request.params.get('term', '')
+    principals = [v.title for k, v in ROLES.items()
+                    if v.title.startswith(text) or v.name.startswith(text) or
+                        v.name.startswith("role:"+text)]
+    every = 'system.Everyone'
+    if every.startswith((text, every.split('.')[1]+text)):
+        principals.append(every)
+    principals.extend(p.title for p in DBSession.query(Principal).filter(or_(
+        Principal.name.like(text+'%'),
+        Principal.title.like(text+'%'),
+        Principal.email.like(text+'%'),
+        Principal.name.like('group:'+text+'%')))[:10])
+    return principals
+
+
+class ACL(SequenceSchema):
+    ace = AceSchema(title = 'Access Control Element')
+
+
+class AclSchema(MappingSchema):
+    acl = ACL(widget=deform.widget.SequenceWidget(orderable=True),
+                title='Access Control List')
 
 
 @view_config(name='share', permission='manage',
-             renderer='kotti:templates/edit/share.pt')
+             renderer='kotti:templates/edit/node.pt')
 def share_node(context, request):
-    # Process form
+    schema = AclSchema()
+    form = deform.Form(schema, buttons=('apply',))
     if 'apply' in request.POST:
-        changed = acl_form_handler(context, request)
-        if changed:
-            request.session.flash(
-                _(u'Your changes have been saved.'), 'success')
+        try:
+            appstruct = form.validate(request.POST.items())
+        except ValidationFailure, e:
+            request.session.flash(_(u"There was an error."), 'error')
+            rendered_form = e.render()
         else:
-            request.session.flash(_(u'No changes made.'), 'info')
-        return HTTPFound(location=request.url)
-
-    if 'search' in request.POST:
-        listed = [ace[1] for ace in context._acl]
-        query = '%' + request.params['query'] + '%'
-        entries = DBSession.query(Principal).filter(or_(
-                Principal.name.like(query),
-                Principal.title.like(query),
-                Principal.email.like(query))).filter(
-                not_(Principal.name.in_(listed))).all()
-        if not entries:
-            request.session.flash(_(u'No users or groups found.'), 'info')
+            acl = []
+            for ace in appstruct['acl']:
+                perms = ace['permissions']
+                perms = perms if len(perms) > 0 else perms[0]
+                perms = ALL_PERMISSIONS if perms == 'ALL_PERMISSIONS' else perms
+                acl.append((Allow if ace['action'] == 'allow' else Deny,
+                            ace['principal'], perms))
+            context._acl = acl
+            request.session.flash(_(u'Your changes have been saved.'), 'success')
+            return HTTPFound(location=request.url)
     else:
-        entries = []
-
+        acl = []
+        for ace in context._acl:
+            if ace[1] == 'role:admin' and ace[2] == ALL_PERMISSIONS:
+                continue
+            perms = 'ALL_PERMISSIONS' if ace[2] == ALL_PERMISSIONS else ace[2]
+            permissions = (perms,) if isinstance(perms, basestring) else perms
+            acl.append(dict(action='allow' if ace[0]==Allow else 'deny',
+                    permissions=permissions, principal=ace[1]))
+        appstruct = dict(acl=acl)
+        rendered_form = form.render(appstruct)
     return {
-        'entries': entries,
-        'acl': context._acl[1:],
-        'permissions': PERMISSIONS,
-        'all': ALL_PERMISSIONS,
+        'form': rendered_form,
         }
 
 
