@@ -37,7 +37,6 @@ Inheritance Diagram
 """
 
 from collections import defaultdict
-from datetime import datetime
 try:  # pragma: no cover
     from collections import OrderedDict
     OrderedDict  # pyflakes
@@ -47,19 +46,11 @@ except ImportError:  # pragma: no cover
 import sqlalchemy.event
 from sqlalchemy.orm import mapper
 from pyramid.threadlocal import get_current_request
-from pyramid.security import authenticated_userid
 
 from kotti import DBSession
-from kotti.resources import Node
 from kotti.resources import Content
 from kotti.resources import Tag
 from kotti.resources import TagsToContents
-from kotti.resources import LocalGroup
-from kotti.security import list_groups
-from kotti.security import list_groups_raw
-from kotti.security import set_groups
-from kotti.security import Principal
-from kotti.security import get_principals
 
 
 class ObjectEvent(object):
@@ -202,56 +193,9 @@ def _after_delete(mapper, conection, target):
     notify(ObjectAfterDelete(target, get_current_request()))
 
 
-def set_owner(event):
-    obj, request = event.object, event.request
-    if request is not None and isinstance(obj, Node) and obj.owner is None:
-        userid = authenticated_userid(request)
-        if userid is not None:
-            userid = unicode(userid)
-            # Set owner metadata:
-            obj.owner = userid
-            # Add owner role for userid if it's not inherited already:
-            if u'role:owner' not in list_groups(userid, obj):
-                groups = list_groups_raw(userid, obj) | set([u'role:owner'])
-                set_groups(userid, obj, groups)
-
-
-def set_creation_date(event):
-    obj = event.object
-    if obj.creation_date is None:
-        obj.creation_date = obj.modification_date = datetime.now()
-
-
-def set_modification_date(event):
-    event.object.modification_date = datetime.now()
-
-
 def delete_orphaned_tags(event):
     DBSession.query(Tag).filter(~Tag.content_tags.any()).delete(
         synchronize_session=False)
-
-
-def cleanup_user_groups(event):
-    """Remove a deleted group from the groups of a user/group and remove
-       all local group entries of it."""
-    name = event.object.name
-
-    if name.startswith("group:"):
-        principals = get_principals()
-        users_groups = [p for p in principals if name in principals[p].groups]
-        for user_or_group in users_groups:
-            principals[user_or_group].groups.remove(name)
-
-    DBSession.query(LocalGroup).filter(
-        LocalGroup.principal_name == name).delete()
-
-
-def reset_content_owner(event):
-    """Reset the owner of the content from the deleted owner."""
-    contents = DBSession.query(Content).filter(
-        Content.owner == event.object.name).all()
-    for content in contents:
-        content.owner = None
 
 
 _WIRED_SQLALCHMEY = False
@@ -274,16 +218,6 @@ def includeme(config):
 
     wire_sqlalchemy()
     objectevent_listeners[
-        (ObjectInsert, Content)].append(set_owner)
-    objectevent_listeners[
-        (ObjectInsert, Content)].append(set_creation_date)
-    objectevent_listeners[
-        (ObjectUpdate, Content)].append(set_modification_date)
-    objectevent_listeners[
         (ObjectAfterDelete, TagsToContents)].append(delete_orphaned_tags)
     objectevent_listeners[
         (ObjectInsert, Content)].append(initialize_workflow)
-    objectevent_listeners[
-        (UserDeleted, Principal)].append(cleanup_user_groups)
-    objectevent_listeners[
-        (UserDeleted, Principal)].append(reset_content_owner)

@@ -7,6 +7,7 @@ Inheritance Diagram
 
 .. inheritance-diagram:: kotti.resources
 """
+from datetime import datetime
 
 import os
 from UserDict import DictMixin
@@ -35,7 +36,6 @@ from sqlalchemy.sql import and_
 from sqlalchemy.sql import select
 from sqlalchemy.util import classproperty
 from transaction import commit
-from zope.deprecation.deprecation import deprecated
 from zope.interface import implements
 
 from kotti import Base
@@ -150,31 +150,6 @@ class ContainerMixin(object, DictMixin):
         ]
 
 
-class LocalGroup(Base):
-
-    __tablename__ = 'local_groups'
-    __table_args__ = (
-        UniqueConstraint('node_id', 'principal_name', 'group_name'),
-        )
-
-    id = Column(Integer(), primary_key=True)
-    node_id = Column(ForeignKey('nodes.id'))
-    principal_name = Column(Unicode(100))
-    group_name = Column(Unicode(100))
-
-    def __init__(self, node, principal_name, group_name):
-        self.node = node
-        self.principal_name = principal_name
-        self.group_name = group_name
-
-    def copy(self, **kwargs):
-        kwargs.setdefault('node', self.node)
-        kwargs.setdefault('principal_name', self.principal_name)
-        kwargs.setdefault('group_name', self.group_name)
-
-        return self.__class__(**kwargs)
-
-
 class Node(Base, ContainerMixin, PersistentACLMixin):
     """Basic node in the persistance hierarchy.
     """
@@ -215,11 +190,6 @@ class Node(Base, ContainerMixin, PersistentACLMixin):
         cascade='all',
         )
 
-    local_groups = relation(
-        LocalGroup,
-        backref=backref('node'),
-        cascade='all',
-        )
 
     def __init__(self, name=None, parent=None, title=u"", annotations=None):
         """Constructor"""
@@ -422,9 +392,9 @@ class Content(Node):
     #: Workflow state of the content object (String)
     state = Column(String(50))
     #: Date / time the content was created (DateTime)
-    creation_date = Column(DateTime())
+    creation_date = Column(DateTime(), default=datetime.now)
     #: Date / time the content was last modified (DateTime)
-    modification_date = Column(DateTime())
+    modification_date = Column(DateTime(), default=datetime.now)
     #: Shall the content be visible in the navigation? (Boolean)
     in_navigation = Column(Boolean())
     _tags = relation(
@@ -472,6 +442,14 @@ class Content(Node):
         self.creation_date = creation_date
         self.modification_date = modification_date
         self.tags = tags or []
+
+    @property
+    def __owner__(self):
+        return self.owner
+
+    @__owner__.setter
+    def __owner__(self, value):
+        self.owner = value
 
     def copy(self, **kwargs):
         # Same as `Node.copy` with additional tag support.
@@ -610,11 +588,3 @@ def initialize_sql(engine, drop_all=False):
 def appmaker(engine):
     initialize_sql(engine)
     return get_root
-
-
-# BBB
-for iface in ("INode", "IContent", "IDocument", "IFile", "IImage",
-              "IDefaultWorkflow"):
-    deprecated(iface,
-               "%s has been moved to kotti.interfaces as of Kotti 0.8. "
-               "Import from there instead." % iface)

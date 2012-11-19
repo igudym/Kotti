@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.sql.expression import or_
 from sqlalchemy.orm.exc import NoResultFound
 from pyramid.location import lineage
-from pyramid.security import authenticated_userid
+from pyramid.security import authenticated_userid, ALL_PERMISSIONS
 from pyramid.security import has_permission as base_has_permission
 from pyramid.security import view_execution_permitted
 
@@ -163,6 +163,7 @@ class AbstractPrincipals(object):
 
 ROLES = {
     u'role:viewer': Principal(u'role:viewer', title=_(u'Viewer')),
+    u'role:author': Principal(u'role:author', title=_(u'Author')),
     u'role:editor': Principal(u'role:editor', title=_(u'Editor')),
     u'role:owner': Principal(u'role:owner', title=_(u'Owner')),
     u'role:admin': Principal(u'role:admin', title=_(u'Admin')),
@@ -170,10 +171,11 @@ ROLES = {
 _DEFAULT_ROLES = ROLES.copy()
 
 # These roles are visible in the sharing tab
-SHARING_ROLES = [u'role:viewer', u'role:editor', u'role:owner']
+SHARING_ROLES = [u'role:viewer', u'role:author', u'role:editor']
 USER_MANAGEMENT_ROLES = SHARING_ROLES + ['role:admin']
 _DEFAULT_SHARING_ROLES = SHARING_ROLES[:]
 _DEFAULT_USER_MANAGEMENT_ROLES = USER_MANAGEMENT_ROLES[:]
+PERMISSIONS=['view', 'add', 'edit', 'manage', 'state_change']
 
 # This is the ACL that gets set on the site root on creation.  Note
 # that this is only really useful if you're _not_ using workflow.  If
@@ -181,10 +183,10 @@ _DEFAULT_USER_MANAGEMENT_ROLES = USER_MANAGEMENT_ROLES[:]
 SITE_ACL = [
     ['Allow', 'system.Everyone', ['view']],
     ['Allow', 'role:viewer', ['view']],
+    ['Allow', 'role:author', ['view', 'add']],
     ['Allow', 'role:editor', ['view', 'add', 'edit', 'state_change']],
-    ['Allow', 'role:owner', ['view', 'add', 'edit', 'manage', 'state_change']],
+    ['Allow', 'role:owner', ['view', 'edit', 'manage', 'state_change']],
     ]
-
 
 def set_roles(roles_dict):
     ROLES.clear()
@@ -233,98 +235,57 @@ class PersistentACLMixin(object):
     __acl__ = property(_get_acl, _set_acl, _del_acl)
 
 
-def _cachekey_list_groups_raw(name, context):
-    context_id = context is not None and getattr(context, 'id', id(context))
-    return (name, context_id)
-
-
-@request_cache(_cachekey_list_groups_raw)
-def list_groups_raw(name, context):
-    """A set of group names in given ``context`` for ``name``.
-
-    Only groups defined in context will be considered, therefore no
-    global or inherited groups are returned.
-    """
-    from kotti.resources import LocalGroup
-    from kotti.resources import Node
-
-    if isinstance(context, Node):
-        return set(
-            r[0] for r in DBSession.query(LocalGroup.group_name).filter(
-            LocalGroup.node_id == context.id).filter(
-            LocalGroup.principal_name == name).all()
-            )
-    return set()
-
-
 def list_groups(name, context=None):
     """List groups for principal with a given ``name``.
 
-    The optional ``context`` argument may be passed to check the list
-    of groups in a given context.
+    The optional ``context`` argument may be passed to check owner
+    of a given context.
     """
-    return list_groups_ext(name, context)[0]
+    def _find_owner(context):
+        """ Node has no 'owner' attribute, so considered owned by owner
+            of closest parent Content node
+        """
+        owner = None
+        for location in lineage(context):
+            if hasattr(location, '__owner__'):
+                owner = location.__owner__
+                break
+        return owner
 
-
-def _cachekey_list_groups_ext(name, context=None, _seen=None, _inherited=None):
-    if _seen is not None or _inherited is not None:
-        raise DontCache
-    else:
-        context_id = getattr(context, 'id', id(context))
-        return (name, context_id)
-
-
-@request_cache(_cachekey_list_groups_ext)
-def list_groups_ext(name, context=None, _seen=None, _inherited=None):
-    name = unicode(name)
-    groups = set()
-    recursing = _inherited is not None
-    _inherited = _inherited or set()
-
-    # Add groups from principal db:
     principal = get_principals().get(name)
-    if principal is not None:
-        groups.update(principal.groups)
-        if context is not None or (context is None and _seen is not None):
-            _inherited.update(principal.groups)
+    groups = set(principal.groups)
 
-    if _seen is None:
-        _seen = set([name])
+    # Add inherited groups
+    queue = principal.groups[:]
+    while len(queue) > 0:
+        new = []
+        for group in queue:
+            if not group.startswith('role:'):
+                parent = get_principals().get(group)
+                if parent is not None:
+                    groups.update(parent.groups)
+                    new.extend(parent.groups)
+        queue = new
 
-    # Add local groups:
+    # Add 'owner' role
     if context is not None:
-        items = lineage(context)
-        for idx, item in enumerate(items):
-            group_names = [i for i in list_groups_raw(name, item)
-                           if i not in _seen]
-            groups.update(group_names)
-            if recursing or idx != 0:
-                _inherited.update(group_names)
+        owner = _find_owner(context)
+        if owner == name:
+            groups.add('role:owner')
+    return groups
 
-    new_groups = groups - _seen
-    _seen.update(new_groups)
-    for group_name in new_groups:
-        g, i = list_groups_ext(
-            group_name, context, _seen=_seen, _inherited=_inherited)
-        groups.update(g)
-        _inherited.update(i)
+def list_groups_ext(name, context=None):
+    principal = get_principals().get(name)
+    ext = set(list_groups(name)) - set(principal.groups)
+    return principal.groups, ext
 
-    return list(groups), list(_inherited)
-
+list_groups_raw = list_groups
 
 def set_groups(name, context, groups_to_set=()):
-    """Set the list of groups for principal with given ``name`` and in
-    given ``context``.
-    """
-    name = unicode(name)
-    from kotti.resources import LocalGroup
-    DBSession.query(LocalGroup).filter(
-        LocalGroup.node_id == context.id).filter(
-        LocalGroup.principal_name == name).delete()
+    pass
 
-    for group_name in groups_to_set:
-        DBSession.add(LocalGroup(context, name, unicode(group_name)))
-
+def map_principals_with_local_roles(context):
+    pass
 
 def list_groups_callback(name, request):
     if not is_user(name):
@@ -332,12 +293,7 @@ def list_groups_callback(name, request):
     if name in get_principals():
         context = request.environ.get(
             'authz_context', getattr(request, 'context', None))
-        if context is None:
-            # SA events don't have request.context available
-            from kotti.resources import get_root
-            context = get_root(request)
-        return list_groups(name, context)
-
+    return list_groups(name, context)
 
 @contextmanager
 def authz_context(context, request):
@@ -350,44 +306,9 @@ def authz_context(context, request):
         if before is not None:
             request.environ['authz_context'] = before
 
-
 def view_permitted(context, request, name=''):
     with authz_context(context, request):
         return view_execution_permitted(context, request, name)
-
-
-def principals_with_local_roles(context, inherit=True):
-    """Return a list of principal names that have local roles in the
-    context.
-    """
-    from resources import LocalGroup
-    principals = set()
-    items = [context]
-    if inherit:
-        items = lineage(context)
-    for item in items:
-        principals.update(
-            r[0] for r in
-            DBSession.query(LocalGroup.principal_name).filter(
-                LocalGroup.node_id == item.id).group_by(
-                LocalGroup.principal_name).all()
-            if not r[0].startswith('role:')
-            )
-    return list(principals)
-
-
-def map_principals_with_local_roles(context):
-    principals = get_principals()
-    value = []
-    for principal_name in principals_with_local_roles(context):
-        try:
-            principal = principals[principal_name]
-        except KeyError:
-            continue
-        else:
-            all, inherited = list_groups_ext(principal_name, context)
-            value.append((principal, (all, inherited)))
-    return sorted(value, key=lambda t: t[0].name)
 
 
 def is_user(principal):
@@ -471,3 +392,19 @@ class Principals(DictMixin):
 
 def principals_factory():
     return Principals()
+
+def acl_search(acl, principal, all_permissions=None):
+    """ Search ACL for ACE with given principal, optional all_permission
+        additionally require that permissions is ALL_PERMISSIONS if
+        all_permissions=True or isn't if all_permissions=False
+        Returns ACE position in ACL and ACE on success and (-1, None)
+        otherwise
+    """
+    for i, ace in enumerate(acl):
+        if ace[1] == principal:
+            if all_permissions is None or (
+                all_permissions and ace[2] == ALL_PERMISSIONS) or (
+                not all_permissions and ace[2] != ALL_PERMISSIONS ):
+                return i, ace
+    return -1, None
+
