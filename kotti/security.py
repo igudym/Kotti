@@ -281,12 +281,6 @@ def list_groups_ext(name, context=None):
 
 list_groups_raw = list_groups
 
-def set_groups(name, context, groups_to_set=()):
-    pass
-
-def map_principals_with_local_roles(context):
-    pass
-
 def list_groups_callback(name, request):
     if not is_user(name):
         return None  # Disallow logging in with groups
