@@ -19,33 +19,21 @@ the 'kotti-reset-workflow' command to reset all your content's workflow.
       name="simple"
       state_attr="state"
       initial_state="private"
-      content_types="kotti.interfaces.IDefaultWorkflow"
+      content_types="kotti.resources.IDefaultWorkflow"
       permission_checker="pyramid.security.has_permission"
       >
 
     <state name="private" callback="kotti.workflow.workflow_callback">
-
+      
       <key name="title" value="_(u'Private')" />
-      <key name="order" value="1" />
-
-      <key name="inherit" value="0" />
-      <key name="system.Everyone" value="" />
-      <key name="role:viewer" value="view" />
-      <key name="role:editor" value="view add edit state_change" />
-      <key name="role:owner" value="view add edit manage state_change" />
+      <key name="ace" value="system.Everyone deny view" />
 
     </state>
 
     <state name="public" callback="kotti.workflow.workflow_callback">
-
+      
       <key name="title" value="_(u'Public')" />
-      <key name="order" value="2" />
-
-      <key name="inherit" value="0" />
-      <key name="system.Everyone" value="view" />
-      <key name="role:viewer" value="view" />
-      <key name="role:editor" value="view add edit state_change" />
-      <key name="role:owner" value="view add edit manage state_change" />
+      <key name="ace" value="system.Everyone allow view" />
 
     </state>
 

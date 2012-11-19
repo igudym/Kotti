@@ -6,8 +6,9 @@ from kotti import DBSession
 from kotti.events import notify
 from kotti.events import ObjectEvent
 from kotti.resources import Content
+from kotti.security import acl_search
 from kotti.util import command
-
+from pyramid.security import Allow, Deny, ALL_PERMISSIONS
 
 class WorkflowTransition(ObjectEvent):
     def __init__(self, object, info, **kwargs):
@@ -47,18 +48,30 @@ def workflow_callback(context, info):
             to_state = wf.initial_state
 
     state_data = wf._state_data[to_state].copy()
-    acl = []
 
-    # This could definitely be cached...
     for key, value in state_data.items():
-        if key.startswith('role:') or key == 'system.Everyone':
-            for perm in value.split():
-                acl.append(("Allow", key, perm))
+        if key == 'ace':
+            elements = value.split()
+            principal, action, perms = elements[0], elements[1], elements[2:]
+            found = -1
+            try: # when acl is empty get raises AttributeError
+                found, ace = acl_search(context.__acl__, principal,
+                                        perms == ['ALL_PERMISSIONS'])
+            except AttributeError:
+                pass
+            if len(perms) == 0 and found >= 0:
+                del context.__acl__[found]
+            perms = ALL_PERMISSIONS if perms == ['ALL_PERMISSIONS'] else perms
+            ace = (Allow if action == 'allow' else Deny, principal,
+                    perms if len(perms) > 1 else perms[0])
+            if found >= 0:
+                context.__acl__[found] = ace
+            else:
+                try:
+                    context.__acl__.insert(0, ace)
+                except AttributeError:
+                    context.__acl__ = [ace]
 
-    if state_data.get('inherit', '0').lower() not in TRUE_VALUES:
-        acl.append(DENY_ALL)
-
-    context.__acl__ = acl
 
     if info.transition:
         notify(WorkflowTransition(context, info))
