@@ -17,6 +17,7 @@ from pyramid.decorator import reify
 from pyramid.httpexceptions import HTTPFound
 from pyramid_deform import CSRFSchema
 from pyramid_deform import FormView
+from pyramid.security import authenticated_userid
 
 from kotti import get_settings
 from kotti.resources import Tag
@@ -147,6 +148,8 @@ class AddFormView(BaseFormView):
     def save_success(self, appstruct):
         appstruct.pop('csrf_token', None)
         name = self.find_name(appstruct)
+        if 'owner' not in appstruct:
+            appstruct['owner'] = authenticated_userid(self.request)
         new_item = self.context[name] = self.add(**appstruct)
         self.request.session.flash(self.success_message, 'success')
         location = self.success_url or self.request.resource_url(new_item)
