@@ -93,6 +93,10 @@ class Principal(Base):
     def __repr__(self):  # pragma: no cover
         return '<Principal %r>' % self.name
 
+    @property
+    def all_groups(self):
+        return list_groups(self.name)
+
 
 class AbstractPrincipals(object):
     """This class serves as documentation and defines what methods are
